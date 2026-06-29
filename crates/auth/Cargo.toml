@@ -1,0 +1,13 @@
+[package]
+name = "lumen-auth"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+lumen-shared.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+jsonwebtoken.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
