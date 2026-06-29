@@ -1,0 +1,20 @@
+{
+  "name": "@lumen/contracts",
+  "version": "0.1.0",
+  "description": "Shared TypeScript contracts mirroring lumen-shared (Rust). Hand-written today; generate from the Axum OpenAPI spec next.",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  }
+}
