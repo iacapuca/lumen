@@ -1,0 +1,51 @@
+cubes:
+  - name: lineitem
+    sql_table: public.lineitem
+
+    joins:
+      - name: orders
+        sql: "{CUBE}.l_orderkey = {orders.o_orderkey}"
+        relationship: many_to_one
+
+    measures:
+      - name: count
+        type: count
+
+      # Canonical TPC-H revenue: SUM(l_extendedprice * (1 - l_discount)).
+      - name: revenue
+        sql: "{CUBE}.l_extendedprice * (1 - {CUBE}.l_discount)"
+        type: sum
+        format: currency
+
+      # Revenue including tax.
+      - name: charge
+        sql: "{CUBE}.l_extendedprice * (1 - {CUBE}.l_discount) * (1 + {CUBE}.l_tax)"
+        type: sum
+        format: currency
+
+      - name: total_quantity
+        sql: l_quantity
+        type: sum
+
+      - name: avg_discount
+        sql: l_discount
+        type: avg
+
+    dimensions:
+      # Composite PK (l_orderkey, l_linenumber).
+      - name: id
+        sql: "{CUBE}.l_orderkey || '-' || {CUBE}.l_linenumber"
+        type: string
+        primary_key: true
+
+      - name: return_flag
+        sql: l_returnflag
+        type: string
+
+      - name: ship_mode
+        sql: l_shipmode
+        type: string
+
+      - name: ship_date
+        sql: l_shipdate
+        type: time

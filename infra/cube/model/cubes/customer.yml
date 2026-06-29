@@ -1,0 +1,31 @@
+cubes:
+  - name: customer
+    sql_table: public.customer
+
+    joins:
+      - name: nation
+        sql: "{CUBE}.c_nationkey = {nation.n_nationkey}"
+        relationship: many_to_one
+
+    measures:
+      - name: count
+        type: count
+      - name: avg_acctbal
+        sql: c_acctbal
+        type: avg
+        format: currency
+
+    dimensions:
+      - name: c_custkey
+        sql: c_custkey
+        type: number
+        primary_key: true
+      - name: name
+        sql: c_name
+        type: string
+      - name: market_segment
+        sql: c_mktsegment
+        type: string
+      - name: acct_balance
+        sql: c_acctbal
+        type: number

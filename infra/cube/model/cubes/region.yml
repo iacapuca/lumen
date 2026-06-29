@@ -1,0 +1,14 @@
+cubes:
+  - name: region
+    sql_table: public.region
+    measures:
+      - name: count
+        type: count
+    dimensions:
+      - name: r_regionkey
+        sql: r_regionkey
+        type: number
+        primary_key: true
+      - name: name
+        sql: r_name
+        type: string
