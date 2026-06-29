@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en" data-theme="{{ theme }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<style>{{ theme_css|safe }}</style>
+</head>
+<body>
+<div class="lumen-root">
+  <header class="lumen-head">
+    <h1>{{ title }}</h1>
+    <span class="sub">{{ subtitle }}</span>
+  </header>
+  <main class="lumen-grid" style="grid-template-columns:repeat({{ grid_cols }},1fr);grid-auto-rows:{{ row_height }}px;gap:{{ gap }}px">
+    {% for c in cards %}
+    <section class="lumen-card {{ c.class }}" style="{{ c.style|safe }}">
+      {% if c.has_title %}<h3>{{ c.title }}</h3>{% endif %}
+      {{ c.body|safe }}
+    </section>
+    {% endfor %}
+  </main>
+  <footer class="lumen-foot">{{ footer }}</footer>
+</div>
+{{ islands|safe }}
+{% if needs_echarts %}<script src="{{ echarts_cdn }}"></script>
+<script src="{{ runtime_url }}"></script>{% endif %}
+</body>
+</html>
