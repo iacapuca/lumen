@@ -1,0 +1,22 @@
+[package]
+name = "lumen-cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lumen"
+path = "src/main.rs"
+
+[dependencies]
+lumen-shared.workspace = true
+lumen-artifact.workspace = true
+lumen-compiler.workspace = true
+lumen-runtime.workspace = true
+clap.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
