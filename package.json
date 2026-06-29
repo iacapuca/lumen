@@ -1,0 +1,13 @@
+{
+  "name": "lumen-monorepo",
+  "private": true,
+  "packageManager": "pnpm@10.33.2",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @lumen/web dev",
+    "build": "pnpm -r build",
+    "web": "pnpm --filter @lumen/web"
+  }
+}

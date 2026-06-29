@@ -1,0 +1,8 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+# Allow these native deps (Vite 8 toolchain) to run their install scripts.
+onlyBuiltDependencies:
+  - esbuild
+  - lightningcss

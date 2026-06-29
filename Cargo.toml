@@ -1,0 +1,72 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/shared",
+    "crates/artifact",
+    "crates/semantic",
+    "crates/compiler",
+    "crates/renderer",
+    "crates/auth",
+    "crates/runtime",
+    "crates/cli",
+]
+# lumen-edge is a separate wasm crate (its own workspace) — it must not be built
+# by the native `cargo build`, so it's excluded here.
+exclude = ["edge"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+authors = ["Lumen"]
+repository = "local"
+
+[workspace.dependencies]
+# --- async / web ---
+tokio = { version = "1.52", features = ["full"] }
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace", "cors", "fs"] }
+reqwest = { version = "0.13", features = ["json", "rustls"] }
+async-trait = "0.1"
+
+# --- data ---
+sqlx = { version = "0.9", features = ["postgres", "runtime-tokio", "tls-rustls", "uuid", "chrono"] }
+
+# --- serde / encoding ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+blake3 = "1"
+hex = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# --- templating ---
+askama = "0.16"
+
+# --- auth ---
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+
+# --- caching ---
+moka = { version = "0.12", features = ["future"] }
+
+# --- cli ---
+clap = { version = "4", features = ["derive", "env"] }
+
+# --- errors / logging ---
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- internal ---
+lumen-shared = { path = "crates/shared" }
+lumen-artifact = { path = "crates/artifact" }
+lumen-semantic = { path = "crates/semantic" }
+lumen-compiler = { path = "crates/compiler" }
+lumen-renderer = { path = "crates/renderer" }
+lumen-auth = { path = "crates/auth" }
+lumen-runtime = { path = "crates/runtime" }
+
+[profile.release]
+lto = "thin"

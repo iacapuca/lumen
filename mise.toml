@@ -1,0 +1,53 @@
+# Lumen — toolchain pins for reproducible local dev.
+# `mise install` then `mise run dev`.
+
+[tools]
+rust = "1.95"
+node = "25"
+
+[env]
+# Local dev defaults. Override in .env for secrets.
+DATABASE_URL = "postgres://lumen:lumen@localhost:5544/lumen"
+CUBE_URL = "http://localhost:4000"
+CUBEJS_API_SECRET = "lumen-dev-cube-secret"
+LUMEN_JWT_SECRET = "dev-only-insecure-secret-change-me"
+LUMEN_BIND = "127.0.0.1:8088"
+RUST_LOG = "lumen=debug,tower_http=debug,info"
+
+[tasks.install]
+description = "Install JS workspace dependencies (pnpm)"
+run = "pnpm install"
+
+[tasks.web]
+description = "Run the TanStack Start control-plane dev server"
+run = "pnpm --filter @lumen/web dev"
+
+[tasks.up]
+description = "Start Postgres + Cube via docker compose"
+run = "docker compose -f infra/docker-compose.yml up -d"
+
+[tasks.down]
+description = "Stop local infra"
+run = "docker compose -f infra/docker-compose.yml down"
+
+[tasks.seed]
+description = "Load TPC-H sample data into Postgres"
+run = "cargo run -p lumen-cli -- seed"
+
+[tasks.compile]
+description = "Compile the sample dashboard into a .lumen DEP"
+run = "cargo run -p lumen-cli -- compile dashboards/sales.json -o .lumen-build/sales.lumen"
+
+[tasks.serve]
+description = "Run the Lumen embedding runtime"
+run = "cargo run -p lumen-cli -- serve"
+
+[tasks.dev]
+description = "Full local loop: infra up, seed, compile, serve"
+depends = ["up"]
+run = [
+  "sleep 3",
+  "cargo run -p lumen-cli -- seed",
+  "cargo run -p lumen-cli -- compile dashboards/sales.json -o .lumen-build/sales.lumen",
+  "cargo run -p lumen-cli -- serve",
+]

@@ -1,0 +1,35 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Compiled dashboard artifacts (the .lumen bundles are build output)
+/.lumen-build
+*.lumen.tmp
+
+# Env / secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Data
+/infra/postgres/data
+/infra/cube/.cubestore
+
+# JS / monorepo
+node_modules
+dist
+.output
+.vinxi
+.tanstack
+.nitro
+*.tsbuildinfo
+.turbo
+# keep pnpm-lock.yaml committed
+
+# Editor / OS
+.DS_Store
+.idea
+.vscode
+*.swp
