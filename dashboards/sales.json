@@ -1,0 +1,32 @@
+{
+  "id": "sales",
+  "title": "Sales Dashboard",
+  "theme": "light",
+  "layout": [
+    {
+      "type": "kpi",
+      "title": "Total Revenue",
+      "measure": "orders.revenue",
+      "format": "currency"
+    },
+    {
+      "type": "kpi",
+      "title": "Orders",
+      "measure": "orders.count",
+      "format": "number"
+    },
+    {
+      "type": "line_chart",
+      "title": "Revenue over time",
+      "x": "orders.created_at",
+      "y": "orders.revenue",
+      "granularity": "month"
+    },
+    {
+      "type": "bar_chart",
+      "title": "Revenue by status",
+      "x": "orders.status",
+      "y": "orders.revenue"
+    }
+  ]
+}

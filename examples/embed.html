@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumen — iframe embedding example</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #f6f7f9; color: #0f172a; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 20px; }
+    .muted { color: #64748b; }
+    iframe { width: 100%; height: 760px; border: 1px solid #e7eaee; border-radius: 12px; background: #fff; }
+    code { background: #eef1f5; padding: 2px 6px; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Embedding Lumen in a host app</h1>
+    <p class="muted">
+      This page lives outside the runtime. It mints a dev token via
+      <code>GET /dev/token</code> (in production your backend signs the embed JWT
+      with the shared secret), then embeds <code>/embed/dashboard/sales</code>.
+    </p>
+    <iframe id="dash" title="Sales dashboard"></iframe>
+  </div>
+
+  <script>
+    // Point this at your runtime. The built-in demo runs on :8088.
+    const BASE = "http://localhost:8088";
+    const DASHBOARD = "sales";
+
+    fetch(`${BASE}/dev/token`)
+      .then((r) => r.text())
+      .then((token) => {
+        document.getElementById("dash").src =
+          `${BASE}/embed/dashboard/${DASHBOARD}?token=${encodeURIComponent(token)}`;
+      })
+      .catch((e) => {
+        document.querySelector(".wrap").insertAdjacentHTML(
+          "beforeend",
+          `<p style="color:#b91c1c">Could not reach the runtime at ${BASE}. Is it running? (mise run serve)</p>`
+        );
+      });
+  </script>
+</body>
+</html>

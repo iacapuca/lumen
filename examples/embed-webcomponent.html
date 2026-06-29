@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lumen — Web Component embedding (no iframe)</title>
+  <style>
+    body { font: 14px/1.5 system-ui, sans-serif; margin: 0; background: #0b0e14; color: #e6e6e6; }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 24px; }
+    h1 { font-size: 20px; }
+    .muted { color: #9aa4b2; }
+    code { background: #141925; padding: 2px 6px; border-radius: 6px; }
+    analytics-dashboard { display: block; border: 1px solid #222a39; border-radius: 12px; overflow: hidden; margin-top: 16px; }
+  </style>
+  <!-- The embed host serves the Web Component (like a CDN). -->
+  <script type="module" src="http://localhost:8088/_lumen/analytics-dashboard.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Embedding Lumen — no iframe</h1>
+    <p class="muted">
+      This page mounts <code>&lt;analytics-dashboard&gt;</code>, which fetches the compiled dashboard
+      <em>fragment</em> and renders it into a <strong>Shadow DOM</strong> (style-isolated, natural sizing) —
+      no iframe, no <code>postMessage</code> resize hacks. In production your <strong>backend</strong> mints
+      the token via <code>POST /tokens</code> with an API key; here we call it from the browser only because
+      dev mode leaves <code>/tokens</code> open.
+    </p>
+
+    <analytics-dashboard id="dash" base="http://localhost:8088" dashboard="sales"></analytics-dashboard>
+    <p class="muted" id="status">Minting token…</p>
+  </div>
+
+  <script type="module">
+    const BASE = "http://localhost:8088";
+    (async () => {
+      try {
+        const res = await fetch(`${BASE}/tokens`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            dashboard: "sales",
+            tenant_id: "acme",
+            user: "demo-user",
+            security_context: { tenant_id: "acme" },
+          }),
+        });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const { token } = await res.json();
+        document.getElementById("dash").setAttribute("token", token);
+        document.getElementById("status").textContent =
+          "Token minted · dashboard embedded via Shadow DOM (view source — no iframe).";
+      } catch (e) {
+        document.getElementById("status").textContent =
+          "Runtime unreachable at " + BASE + " — run `mise run serve` first.";
+      }
+    })();
+  </script>
+</body>
+</html>
