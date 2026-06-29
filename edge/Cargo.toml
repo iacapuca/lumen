@@ -1,0 +1,50 @@
+# lumen-edge — the Cloudflare Workers (wasm32) entrypoint.
+#
+# It is its OWN workspace (empty [workspace] below) so the native `cargo build`
+# in the parent never tries to compile the `worker` crate for x86_64. Build/deploy
+# it with wrangler:  cd edge && npx wrangler deploy
+#
+# It REUSES the proven, I/O-free compute core (compiler/renderer/artifact/shared,
+# all verified to compile to wasm32) and only swaps the I/O adapters for
+# Cloudflare bindings.
+[workspace]
+
+[package]
+name = "lumen-edge"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Cloudflare Workers runtime + bindings (Router, R2, KV, Durable Objects, Fetch).
+worker = { version = "0.5", features = ["http", "axum"] }
+worker-macros = "0.5"
+
+# The reused compute core — same crates the native runtime uses.
+lumen-shared = { path = "../crates/shared" }
+lumen-artifact = { path = "../crates/artifact" }
+lumen-compiler = { path = "../crates/compiler" }
+lumen-renderer = { path = "../crates/renderer" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Pure-Rust HS256 (mint + verify). NB: we deliberately avoid `jsonwebtoken` here
+# because its default `aws_lc_rs` crypto backend does not build for wasm32.
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+
+# blake3 must use its pure-Rust path on wasm (no C/SIMD build).
+blake3 = { version = "1", default-features = false, features = ["pure"] }
+
+console_error_panic_hook = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
