@@ -109,8 +109,14 @@ async fn embed(req: Request, ctx: RouteContext<()>) -> Result<Response> {
 
     // 2. Load the compiled DEP from R2 (content-addressed, immutable).
     let bucket = ctx.bucket("LUMEN_DEP")?;
-    let object = bucket.get(format!("{id}.lumen")).execute().await?;
-    let bytes = match object.and_then(|o| o.body()) {
+    // NB: `ObjectBody<'_>` borrows the `Object`, so the object must outlive the
+    // body stream — bind it first, then take its body (cannot `and_then` a moved
+    // local away under it).
+    let object = match bucket.get(format!("{id}.lumen")).execute().await? {
+        Some(o) => o,
+        None => return Response::error("no compiled dashboard", 404),
+    };
+    let bytes = match object.body() {
         Some(body) => body.bytes().await?,
         None => return Response::error("no compiled dashboard", 404),
     };

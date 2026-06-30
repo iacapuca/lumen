@@ -1,42 +1,50 @@
 {
-  // Cloudflare Workers config for lumen-edge (Rust → wasm).
-  // Build/deploy:  npx wrangler dev   |   npx wrangler deploy
-  "name": "lumen-edge",
-  "main": "build/worker/shim.mjs",
-  "compatibility_date": "2026-06-01",
-
-  // worker-build compiles the Rust crate to wasm and emits the JS shim.
-  "build": {
-    "command": "cargo install -q worker-build && worker-build --release"
-  },
-
-  "vars": {
-    "CUBE_URL": "https://cube.your-host",
-    "QUERY_TTL_SECS": "60"
-  },
-
-  // DEP store: content-addressed .lumen bundles (immutable, long-lived).
-  "r2_buckets": [
-    { "binding": "LUMEN_DEP", "bucket_name": "lumen-deps" }
-  ],
-
-  // Semantic-query result cache (tenant + sc scoped, TTL).
-  "kv_namespaces": [
-    { "binding": "LUMEN_CACHE", "id": "<run: wrangler kv namespace create LUMEN_CACHE>" }
-  ],
-
-  // Per-tenant credit accumulator (transactional usage ledger).
-  "durable_objects": {
-    "bindings": [
-      { "name": "TENANT_METER", "class_name": "TenantMeter" }
-    ]
-  },
-  "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["TenantMeter"] }
-  ]
-
-  // Secrets (set with `wrangler secret put <NAME>`):
-  //   LUMEN_JWT_SECRET   — verifies embed tokens + signs the Cube JWT payload
-  //   CUBE_API_SECRET    — CUBEJS_API_SECRET (signs the Cube securityContext JWT)
-  //   LUMEN_API_KEY      — optional; gates POST /tokens
+	// Cloudflare Workers config for lumen-edge (Rust → wasm).
+	// Build/deploy:  npx wrangler dev   |   npx wrangler deploy
+	"name": "lumen-edge",
+	"main": "build/worker/shim.mjs",
+	"compatibility_date": "2026-06-01",
+	// worker-build compiles the Rust crate to wasm and emits the JS shim.
+	"build": {
+		"command": "cargo install -q worker-build@^0.1 && worker-build --release"
+	},
+	"vars": {
+		"CUBE_URL": "https://cube.your-host",
+		"QUERY_TTL_SECS": "60"
+	},
+	// DEP store: content-addressed .lumen bundles (immutable, long-lived).
+	"r2_buckets": [
+		{
+			"binding": "LUMEN_DEP",
+			"bucket_name": "lumen-deps"
+		}
+	],
+	// Semantic-query result cache (tenant + sc scoped, TTL).
+	"kv_namespaces": [
+		{
+			"binding": "LUMEN_CACHE",
+			"id": "8a8fdf78ec9743b6b7281fa3edb242f1"
+		}
+	],
+	// Per-tenant credit accumulator (transactional usage ledger).
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "TENANT_METER",
+				"class_name": "TenantMeter"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"TenantMeter"
+			]
+		}
+	]
+	// Secrets (set with `wrangler secret put <NAME>`):
+	//   LUMEN_JWT_SECRET   — verifies embed tokens + signs the Cube JWT payload
+	//   CUBE_API_SECRET    — CUBEJS_API_SECRET (signs the Cube securityContext JWT)
+	//   LUMEN_API_KEY      — optional; gates POST /tokens
 }

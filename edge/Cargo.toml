@@ -23,6 +23,20 @@ crate-type = ["cdylib"]
 worker = { version = "0.5", features = ["http", "axum"] }
 worker-macros = "0.5"
 
+# REQUIRED direct deps: the `#[durable_object]` / `#[event]` macros expand to
+# crate-root paths (`wasm_bindgen::prelude::wasm_bindgen`,
+# `wasm_bindgen_futures::future_to_promise`), so these must be importable at the
+# crate root — not just re-exported through `worker`. Versions are kept in range
+# with the ones `worker` 0.5 pins so cargo unifies them (single copy).
+#
+# PINNED EXACTLY: `worker` 0.5 pairs with `worker-build@^0.1`, whose bundled
+# `wasm-bindgen` CLI is 0.2.105 and must match the schema in the compiled wasm
+# EXACTLY. Left unpinned these float to a newer 0.2.x than the CLI supports and
+# `worker-build` fails with a schema-version mismatch. 0.4.55 is the
+# wasm-bindgen-futures release paired with wasm-bindgen 0.2.105.
+wasm-bindgen = "=0.2.105"
+wasm-bindgen-futures = "=0.4.55"
+
 # The reused compute core — same crates the native runtime uses.
 lumen-shared = { path = "../crates/shared" }
 lumen-artifact = { path = "../crates/artifact" }

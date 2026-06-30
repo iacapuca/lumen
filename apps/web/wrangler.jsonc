@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lumen-web",
+  // 2024-09-23 or later is required for `nodejs_compat` (needed by `pg` +
+  // Hyperdrive). Bump as you adopt newer runtime behaviour.
+  "compatibility_date": "2025-09-24",
+  // `nodejs_compat` gives the Worker Node built-ins so the `pg` Pool used by
+  // Better Auth (over Hyperdrive) works.
+  "compatibility_flags": ["nodejs_compat"],
+  // Virtual server entry provided by TanStack Start. `@cloudflare/vite-plugin`
+  // resolves + bundles it during `vite build`; the client assets in
+  // `dist/client` are auto-wired by the plugin (no manual `assets` field).
+  "main": "@tanstack/react-start/server-entry",
+  "observability": {
+    "enabled": true
+  },
+  // Postgres over Hyperdrive. Replace `id` with the real Hyperdrive config id
+  // (`wrangler hyperdrive create ...`). Read at runtime as
+  // `env.HYPERDRIVE.connectionString` (see src/lib/cf-env.ts + src/lib/auth.ts).
+  // `localConnectionString` is only used by `wrangler dev`.
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "3777b630acbd460c818213fe9af38aa1",
+      "localConnectionString": "postgres://lumen:lumen@localhost:5544/lumen"
+    }
+  ],
+  // Non-secret runtime config. BETTER_AUTH_SECRET is NOT here — set it with
+  // `wrangler secret put BETTER_AUTH_SECRET`. VITE_-prefixed values are also
+  // inlined at build time for the client bundle; set them in the build env if
+  // the browser needs them.
+  "vars": {
+    "BETTER_AUTH_URL": "https://lumen-web.plpbs.workers.dev",
+    "VITE_LUMEN_RUNTIME_URL": "https://lumen-edge.plpbs.workers.dev"
+  }
+}
