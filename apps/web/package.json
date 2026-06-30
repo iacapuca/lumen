@@ -9,7 +9,9 @@
     "build": "vite build",
     "start": "node --env-file-if-exists=.env dist/server/server.js",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "deploy": "vite build && wrangler deploy",
+    "cf-typegen": "wrangler types"
   },
   "dependencies": {
     "@lumen/contracts": "workspace:*",
@@ -22,12 +24,14 @@
     "react-dom": "19.2.7"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.42.3",
     "@types/node": "^22.18.0",
     "@types/pg": "^8.20.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "6.0.3",
     "typescript": "^6.0.2",
-    "vite": "8.1.0"
+    "vite": "8.1.0",
+    "wrangler": "^4.105.0"
   }
 }

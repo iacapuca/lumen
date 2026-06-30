@@ -1,0 +1,16 @@
+# Local `wrangler dev` secrets for the edge runtime (edge/).
+#   cp edge/.dev.vars.example edge/.dev.vars   # then fill in
+# `.dev.vars` is gitignored. In production these are set with `wrangler secret put`.
+#
+# Non-secret config (CUBE_URL, QUERY_TTL_SECS) is NOT here — it lives in
+# edge/wrangler.jsonc `vars`.
+
+# Shared with the control plane: it mints embed tokens, the edge verifies them.
+# MUST match the control plane's LUMEN_JWT_SECRET.
+LUMEN_JWT_SECRET=""
+
+# Cube CUBEJS_API_SECRET — signs the securityContext JWT sent to Cube.
+CUBE_API_SECRET=""
+
+# Optional: gates POST /tokens. Leave blank to keep that endpoint open.
+LUMEN_API_KEY=""

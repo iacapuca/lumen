@@ -1,5 +1,6 @@
 # Rust
 /target
+**/target/
 **/*.rs.bk
 Cargo.lock.bak
 
@@ -10,6 +11,8 @@ Cargo.lock.bak
 # Env / secrets
 .env
 .env.local
+deploy/.env.deploy
+.dev.vars
 *.pem
 *.key
 
@@ -26,7 +29,11 @@ dist
 .nitro
 *.tsbuildinfo
 .turbo
+.wrangler
 # keep pnpm-lock.yaml committed
+
+# Tooling caches
+.firecrawl
 
 # Editor / OS
 .DS_Store
