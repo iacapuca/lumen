@@ -1,0 +1,20 @@
+# Local dev secrets for the Cloudflare Worker.
+#   cp apps/web/.dev.vars.example apps/web/.dev.vars   # then fill in
+# Loaded automatically by `pnpm dev` (@cloudflare/vite-plugin runs the app under
+# workerd/Miniflare in dev too — see vite.config.ts). Overrides wrangler.jsonc's
+# `vars` for keys present here. In production these are real secrets set via
+# `wrangler secret put <NAME>`, never committed.
+
+# Better Auth session-signing secret. Generate one with:  openssl rand -base64 48
+BETTER_AUTH_SECRET=""
+
+# Local override of wrangler.jsonc's `vars.BETTER_AUTH_URL` (which holds the
+# production URL).
+BETTER_AUTH_URL="http://localhost:3000"
+
+# Shared first-party secret with the Lumen runtime (crates/runtime,
+# LUMEN_INTERNAL_API_KEY there — must match exactly). Lets the control plane
+# mint preview tokens on behalf of whichever organization owns the dashboard
+# being previewed; NOT the same as a design partner's own per-organization
+# runtime API key. Matches mise.toml's dev default.
+LUMEN_INTERNAL_API_KEY="dev-only-internal-key-change-me"

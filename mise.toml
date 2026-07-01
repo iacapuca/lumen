@@ -1,18 +1,41 @@
 # Lumen — toolchain pins for reproducible local dev.
 # `mise install` then `mise run dev`.
+#
+# Rust is intentionally NOT managed here — it's owned by rustup via
+# rust-toolchain.toml, which handles components (clippy/rustfmt/rust-analyzer)
+# and the wasm32 target that the edge crate needs. mise manages everything else.
 
 [tools]
-rust = "1.95"
 node = "25"
+# Matches the `packageManager` pin in package.json. Node 25 no longer bundles
+# corepack, so mise provides pnpm directly.
+pnpm = "10.33.2"
 
 [env]
 # Local dev defaults. Override in .env for secrets.
 DATABASE_URL = "postgres://lumen:lumen@localhost:5544/lumen"
+
+# Semantic layer — "cube" (default) or "dbt". The runtime builds the matching
+# adapter from the vars below; only the selected provider's vars are read.
+SEMANTIC_PROVIDER = "cube"
+# --- Cube ---
+# Two Cube instances run locally, one per warehouse (see infra/docker-compose.yml):
+#   :4000 -> postgres warehouse (default below)
+#   :4001 -> clickhouse warehouse — override CUBE_URL to point Lumen at it.
 CUBE_URL = "http://localhost:4000"
 CUBEJS_API_SECRET = "lumen-dev-cube-secret"
+# --- dbt Semantic Layer (set SEMANTIC_PROVIDER="dbt" to use) ---
+# DBT_SL_GRAPHQL_URL = "https://semantic-layer.cloud.getdbt.com/api/graphql"
+# DBT_SL_SERVICE_TOKEN = ""
+# DBT_SL_ENVIRONMENT_ID = ""
 LUMEN_JWT_SECRET = "dev-only-insecure-secret-change-me"
 LUMEN_BIND = "127.0.0.1:8088"
 RUST_LOG = "lumen=debug,tower_http=debug,info"
+# Shared first-party secret between apps/web and the runtime — lets the
+# control plane mint preview tokens for whichever organization owns the
+# dashboard being previewed. NOT the same as a design partner's own
+# per-organization runtime API key (crates/runtime/src/lib.rs resolve_account).
+LUMEN_INTERNAL_API_KEY = "dev-only-internal-key-change-me"
 
 [tasks.install]
 description = "Install JS workspace dependencies (pnpm)"
@@ -23,7 +46,7 @@ description = "Run the TanStack Start control-plane dev server"
 run = "pnpm --filter @lumen/web dev"
 
 [tasks.up]
-description = "Start Postgres + Cube via docker compose"
+description = "Start Postgres + ClickHouse + their Cube instances via docker compose"
 run = "docker compose -f infra/docker-compose.yml up -d"
 
 [tasks.down]
@@ -33,6 +56,10 @@ run = "docker compose -f infra/docker-compose.yml down"
 [tasks.seed]
 description = "Load TPC-H sample data into Postgres"
 run = "cargo run -p lumen-cli -- seed"
+
+[tasks.seed-clickhouse]
+description = "Load TPC-H sample data into ClickHouse (same shape as `seed`, ClickHouse-flavored SQL)"
+run = "docker exec lumen-clickhouse-1 clickhouse-client --user lumen --password lumen --multiquery --queries-file /seed/seed.sql"
 
 [tasks.compile]
 description = "Compile the sample dashboard into a .lumen DEP"

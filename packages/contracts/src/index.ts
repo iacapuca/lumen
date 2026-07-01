@@ -23,6 +23,17 @@ export type Granularity =
   | "quarter"
   | "year";
 
+/** Explicit grid placement (builder-authored). Absent ⇒ compiler auto-flow.
+ *  Units/semantics are identical to react-grid-layout's LayoutItem{x,y,w,h}
+ *  and to the renderer's CSS grid placement (column {x+1}/span {w}, row
+ *  {y+1}/span {h}) — no conversion needed in either direction. */
+export interface GridPos {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface WidgetDef {
   type: WidgetKind;
   title?: string;
@@ -34,6 +45,13 @@ export interface WidgetDef {
   y?: string;
   granularity?: Granularity;
   format?: ValueFormat;
+  pos?: GridPos;
+}
+
+/** Mirrors crates/runtime/src/lib.rs::is_valid_dashboard_id exactly — keep
+ *  client-side validation in sync with the runtime's path-traversal guard. */
+export function isValidDashboardId(id: string): boolean {
+  return id.length > 0 && id.length <= 128 && /^[A-Za-z0-9_-]+$/.test(id);
 }
 
 export interface DashboardDef {
@@ -59,6 +77,37 @@ export const RUNTIME_JS = "/_lumen/runtime.js";
 export function embedUrl(baseUrl: string, dashboardId: string, token: string): string {
   const base = baseUrl.replace(/\/$/, "");
   return `${base}/embed/dashboard/${encodeURIComponent(dashboardId)}?token=${encodeURIComponent(token)}`;
+}
+
+/** GET /meta → raw semantic-layer data-model metadata (Cube cubes+measures+dimensions). */
+export const META = "/meta";
+
+/** POST /compile → compile a DashboardDef and write it to build_dir. */
+export const COMPILE = "/compile";
+
+/** Response shape of POST /compile (mirrors crates/cli's printed summary). */
+export interface CompileSummary {
+  id: string;
+  title: string;
+  widgets: number;
+  queries: number;
+  credits: number;
+  content_hash: string;
+  renderers: Renderer[];
+}
+
+/** Cube's `/cubejs-api/v1/meta` shape, confirmed live against this session's
+ *  running Cube instance — member names are already fully-qualified
+ *  ("cube.field") and usable directly as WidgetDef.measure/.x/.y values.
+ *  dbt's meta() returns a different (flat metrics) shape; treat any
+ *  non-`cubes` response as having no fields for now (fast-follow). */
+export interface SemanticMeta {
+  cubes?: Array<{
+    name: string;
+    title?: string;
+    measures: Array<{ name: string; title?: string; type?: string; format?: string }>;
+    dimensions: Array<{ name: string; title?: string; type?: string }>;
+  }>;
 }
 
 /** A claim payload mintable into an embed JWT (mirrors lumen-auth Claims). */

@@ -1,0 +1,51 @@
+cubes:
+  - name: orders
+    sql_table: orders
+
+    joins:
+      - name: customer
+        sql: "{CUBE}.o_custkey = {customer.c_custkey}"
+        relationship: many_to_one
+
+    measures:
+      - name: count
+        type: count
+
+      # Order-grain revenue. Safe to sum here because this cube is not fanned out
+      # by lineitem. (Canonical line-level revenue lives on the `lineitem` cube.)
+      - name: revenue
+        sql: o_totalprice
+        type: sum
+        format: currency
+
+      - name: total_price
+        sql: o_totalprice
+        type: sum
+        format: currency
+
+      - name: avg_order_value
+        sql: o_totalprice
+        type: avg
+        format: currency
+
+    dimensions:
+      - name: o_orderkey
+        sql: o_orderkey
+        type: number
+        primary_key: true
+
+      - name: status        # 'O' open / 'F' finished / 'P' partial
+        sql: o_orderstatus
+        type: string
+
+      - name: priority
+        sql: o_orderpriority
+        type: string
+
+      - name: created_at
+        sql: o_orderdate
+        type: time
+
+      - name: order_date
+        sql: o_orderdate
+        type: time

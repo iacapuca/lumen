@@ -1,9 +1,11 @@
 import type { ReactNode } from 'react'
-import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
+import { HeadContent, Scripts, createRootRouteWithContext } from '@tanstack/react-router'
+import type { QueryClient } from '@tanstack/react-query'
+import { ReactQueryDevtools } from '@tanstack/react-query-devtools'
 
 import appCss from '../styles.css?url'
 
-export const Route = createRootRoute({
+export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   head: () => ({
     meta: [
       { charSet: 'utf-8' },
@@ -20,12 +22,15 @@ export const Route = createRootRoute({
 // public routes — landing, login, signup — render without it.
 function RootDocument({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    // Single-themed app (always dark) — `dark` is permanent, not a toggle.
+    // Activates shadcn/ui's dark-mode CSS variables (see styles.css `.dark`).
+    <html lang="en" className="dark">
       <head>
         <HeadContent />
       </head>
       <body>
         {children}
+        {import.meta.env.DEV && <ReactQueryDevtools buttonPosition="bottom-left" />}
         <Scripts />
       </body>
     </html>

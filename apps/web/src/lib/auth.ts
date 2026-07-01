@@ -3,66 +3,107 @@
 // (`src/routes/api/auth/$.ts`) or from the server-side of a `createServerFn`
 // handler (`src/lib/auth-session.ts`).
 //
-// On Cloudflare Workers there is no process-wide `process.env` for secrets and
-// bindings — they arrive as a per-request `env` object. So instead of building
-// one `auth` instance at module load, we expose a `getAuth(env)` factory:
-//   * On Workers, callers pass the Cloudflare `env` (see `cf-env.ts`); the
-//     Postgres connection string comes from the Hyperdrive binding
-//     (`env.HYPERDRIVE.connectionString`).
-//   * In local Node dev, callers pass `undefined` and we fall back to
-//     `process.env` (populated by the `--env-file` dev script).
+// Bindings/secrets come from `getBindings()` (see bindings.ts) — real in every
+// mode (dev included), since `@cloudflare/vite-plugin` runs the app under
+// workerd/Miniflare even in `pnpm dev`.
 import { betterAuth } from 'better-auth'
+import { organization } from 'better-auth/plugins'
 import { tanstackStartCookies } from 'better-auth/tanstack-start'
-import { Pool } from 'pg'
+import { drizzleAdapter } from '@better-auth/drizzle-adapter'
 
-import type { CloudflareEnv } from './cf-env'
+import { getBindings } from './bindings'
+import { getDb } from './db/client'
+import * as schema from './db/schema'
 
-type AuthInstance = ReturnType<typeof betterAuth>
+// NB: `AuthInstance` is derived below from `ReturnType<typeof createAuth>`,
+// NOT `ReturnType<typeof betterAuth>` directly — the latter resolves against
+// `betterAuth`'s generic, argument-less call signature and silently erases
+// every plugin-provided type augmentation (session fields, `.api.*`
+// endpoints). `createAuth` has no explicit return-type annotation for the
+// same reason: annotating it would re-widen the return type back down to the
+// generic shape it's trying to avoid.
+function createAuth() {
+  const bindings = getBindings()
 
-// Memoise the built instance (and its `pg` Pool) per connection string so we
-// don't open a new pool on every request inside a warm Worker isolate / Node
-// process. The key folds in the values that change the instance's behaviour.
-const cache = new Map<string, AuthInstance>()
+  // Fail fast rather than let Better Auth silently run with no/blank secret —
+  // that would sign sessions with an empty key. `.dev.vars.example`
+  // documents generating one with `openssl rand -base64 48`; this only ever
+  // fires if that step was skipped, not on the already-configured local dev
+  // secret.
+  if (!bindings.BETTER_AUTH_SECRET) {
+    throw new Error(
+      'BETTER_AUTH_SECRET is not set. Generate one with `openssl rand -base64 48` and set it in apps/web/.dev.vars (or `wrangler secret put BETTER_AUTH_SECRET` in production).',
+    )
+  }
+  const baseURL = bindings.BETTER_AUTH_URL || 'http://localhost:3000'
 
-function buildAuth(connectionString: string | undefined, baseURL: string, secret: string | undefined): AuthInstance {
   return betterAuth({
-    // Postgres via the built-in `pg` Pool adapter — Better Auth's Kysely layer
-    // talks to it directly (no ORM). On Workers this pool runs over Hyperdrive
-    // and requires the `nodejs_compat` compatibility flag. The migration CLI
-    // uses the same DATABASE_URL.
-    database: new Pool({ connectionString }),
+    // Drizzle adapter over the same shared `getDb()` client every
+    // Lumen-owned table (dashboards, data_sources) uses — see db/client.ts.
+    // `camelCase: true` matches the columns Better Auth's own CLI already
+    // created (runtimeApiKeyHash, activeOrganizationId, ...) — confirmed live
+    // against Postgres before wiring this in, not assumed.
+    database: drizzleAdapter(getDb(), { provider: 'pg', schema, camelCase: true }),
     emailAndPassword: {
       enabled: true,
       // No email provider wired up yet — don't gate sign-in on verification.
       requireEmailVerification: false,
     },
     baseURL,
-    secret,
+    secret: bindings.BETTER_AUTH_SECRET,
     trustedOrigins: [baseURL, 'http://localhost:3000'],
+    // Cache the session in a short-lived signed cookie so most requests
+    // (every page load, every server fn) skip the round-trip to Postgres
+    // that `getSession` would otherwise make every time. Trade-off: a
+    // revoked session or an org change (e.g. `setActiveOrganization`) can
+    // take up to `maxAge` to be observed — acceptable here since Lumen has
+    // no forced-signout/admin-revocation feature yet and `activeOrganizationId`
+    // is set once at signup and never changed afterward.
+    session: {
+      cookieCache: { enabled: true, maxAge: 5 * 60 },
+    },
     // Forwards Set-Cookie headers through TanStack Start's server runtime so
     // sessions set inside server functions land on the response.
-    plugins: [tanstackStartCookies()],
+    plugins: [
+      tanstackStartCookies(),
+      // Every signed-up user gets exactly one organization (their "workspace")
+      // — see lib/organizations.ts::ensureOrganization. `organization.id` is
+      // the account boundary the Rust runtime enforces: dashboards belong to
+      // one org, and POST /tokens (on the runtime) resolves the caller's
+      // org via the runtimeApiKeyHash below, never a client-supplied value.
+      //
+      // `input: false` on both fields blocks them from the public
+      // create/update API bodies — they're only ever written by our own
+      // server code via a direct SQL UPDATE (lib/organizations.ts), never by
+      // a client-supplied field, which is the whole point: nobody can set
+      // their own org's key hash from the client. `returned: false` on the
+      // hash keeps it out of API responses entirely; the prefix is safe to
+      // return (display only, e.g. "lumen_sk_ab12…").
+      organization({
+        schema: {
+          organization: {
+            additionalFields: {
+              runtimeApiKeyHash: { type: 'string', required: false, input: false, returned: false },
+              runtimeApiKeyPrefix: { type: 'string', required: false, input: false, returned: true },
+            },
+          },
+        },
+      }),
+    ],
   })
 }
 
-/**
- * Build (or reuse) a Better Auth instance for the given runtime environment.
- *
- * @param env Cloudflare Workers bindings/secrets for the current request, or
- *   `undefined` in local Node dev (we then read `process.env`).
- */
-export function getAuth(env?: CloudflareEnv): AuthInstance {
-  const connectionString = env?.HYPERDRIVE?.connectionString ?? process.env.DATABASE_URL
-  const baseURL = env?.BETTER_AUTH_URL ?? process.env.BETTER_AUTH_URL ?? 'http://localhost:3000'
-  const secret = env?.BETTER_AUTH_SECRET ?? process.env.BETTER_AUTH_SECRET
+type AuthInstance = ReturnType<typeof createAuth>
 
-  const key = `${connectionString ?? ''}|${baseURL}`
-  let instance = cache.get(key)
-  if (!instance) {
-    instance = buildAuth(connectionString, baseURL, secret)
-    cache.set(key, instance)
-  }
-  return instance
+// Lazy singleton. Bindings stay stable for the isolate's lifetime, so
+// caching the configured instance (and its `pg` Pool, via getDb()) is
+// correct — do NOT call this at module top-level, only from within a
+// request/handler, same constraint `getBindings()` itself has.
+let _auth: AuthInstance | undefined
+
+export function getAuth(): AuthInstance {
+  if (!_auth) _auth = createAuth()
+  return _auth
 }
 
 export type Session = AuthInstance['$Infer']['Session']

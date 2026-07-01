@@ -1,0 +1,18 @@
+cubes:
+  - name: nation
+    sql_table: nation
+    joins:
+      - name: region
+        sql: "{CUBE}.n_regionkey = {region.r_regionkey}"
+        relationship: many_to_one
+    measures:
+      - name: count
+        type: count
+    dimensions:
+      - name: n_nationkey
+        sql: n_nationkey
+        type: number
+        primary_key: true
+      - name: name
+        sql: n_name
+        type: string

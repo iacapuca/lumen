@@ -7,6 +7,7 @@ import { signOut, useSession } from '../lib/auth-client'
 const NAV = [
   { to: '/dashboards', label: 'Dashboards' },
   { to: '/embedding', label: 'Embedding' },
+  { to: '/data-sources', label: 'Data Sources' },
   { to: '/usage', label: 'Usage' },
 ] as const
 

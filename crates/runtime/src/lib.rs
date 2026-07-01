@@ -23,10 +23,10 @@ use axum::{
 use lumen_artifact::Dep;
 use lumen_auth::{mint_token, verify, AuthConfig, Principal, TokenInput};
 use lumen_renderer::{render_dashboard, render_fragment, RenderContext};
-use lumen_semantic::{CubeClient, SemanticLayer};
+use lumen_semantic::{Provider, SemanticConfig, SemanticLayer};
 use lumen_shared::{
     meter::{self, MeterEvent, MeterKind},
-    Data, QueryId,
+    Data, DashboardDef, QueryId,
 };
 use moka::future::Cache;
 use serde_json::json;
@@ -43,14 +43,17 @@ const ELEMENT_JS: &str =
 pub struct Config {
     pub bind_addr: String,
     pub build_dir: PathBuf,
-    pub cube_url: String,
-    pub cube_secret: String,
+    /// Neutral semantic-layer config (Cube or dbt SL), selected by
+    /// `SEMANTIC_PROVIDER`.
+    pub semantic: SemanticConfig,
     pub jwt_secret: String,
     pub database_url: Option<String>,
     pub query_ttl_secs: u64,
     pub echarts_cdn: String,
-    /// If set, `POST /tokens` requires this key (X-Api-Key / Bearer). Unset = open (dev).
-    pub api_key: Option<String>,
+    /// Shared secret for the Lumen control plane's own server (never a design
+    /// partner's own key) — lets it mint preview tokens on behalf of whichever
+    /// organization owns the dashboard being previewed. See `resolve_account`.
+    pub internal_api_key: Option<String>,
 }
 
 impl Config {
@@ -59,8 +62,18 @@ impl Config {
         Config {
             bind_addr: env("LUMEN_BIND", "0.0.0.0:8080"),
             build_dir: PathBuf::from(env("LUMEN_BUILD_DIR", ".lumen-build")),
-            cube_url: env("CUBE_URL", "http://localhost:4000"),
-            cube_secret: env("CUBEJS_API_SECRET", "lumen-dev-cube-secret"),
+            semantic: SemanticConfig {
+                // Defaults to Cube when SEMANTIC_PROVIDER is unset (back-compat).
+                provider: Some(Provider::parse(&env("SEMANTIC_PROVIDER", "cube"))),
+                cube_url: env("CUBE_URL", "http://localhost:4000"),
+                cube_secret: env("CUBEJS_API_SECRET", "lumen-dev-cube-secret"),
+                dbt_graphql_url: env(
+                    "DBT_SL_GRAPHQL_URL",
+                    "https://semantic-layer.cloud.getdbt.com/api/graphql",
+                ),
+                dbt_service_token: env("DBT_SL_SERVICE_TOKEN", ""),
+                dbt_environment_id: env("DBT_SL_ENVIRONMENT_ID", ""),
+            },
             jwt_secret: env("LUMEN_JWT_SECRET", "dev-only-insecure-secret-change-me"),
             database_url: std::env::var("DATABASE_URL").ok(),
             query_ttl_secs: env("LUMEN_QUERY_TTL", "60").parse().unwrap_or(60),
@@ -68,14 +81,60 @@ impl Config {
                 "LUMEN_ECHARTS_CDN",
                 "https://cdn.jsdelivr.net/npm/echarts@6.1.0/dist/echarts.min.js",
             ),
-            api_key: std::env::var("LUMEN_API_KEY").ok(),
+            internal_api_key: std::env::var("LUMEN_INTERNAL_API_KEY").ok(),
         }
     }
 }
 
+const DEV_JWT_SECRET: &str = "dev-only-insecure-secret-change-me";
+const DEV_CUBE_SECRET: &str = "lumen-dev-cube-secret";
+const DEV_INTERNAL_API_KEY: &str = "dev-only-internal-key-change-me";
+
+/// Warn (always) or hard-fail (`LUMEN_ENV=production`) when a secret is still
+/// at its known-insecure dev default. Unset secrets already warn at their own
+/// call sites (`LUMEN_INTERNAL_API_KEY` in `serve`) — this closes the
+/// different gap where a secret that IS set, but left at the placeholder
+/// value from mise.toml/docs, was silently accepted.
+fn check_secrets(cfg: &Config) -> anyhow::Result<()> {
+    let mut insecure = Vec::new();
+    if cfg.jwt_secret == DEV_JWT_SECRET {
+        insecure.push("LUMEN_JWT_SECRET");
+    }
+    if cfg.semantic.cube_secret == DEV_CUBE_SECRET {
+        insecure.push("CUBEJS_API_SECRET");
+    }
+    if cfg.internal_api_key.as_deref() == Some(DEV_INTERNAL_API_KEY) {
+        insecure.push("LUMEN_INTERNAL_API_KEY");
+    }
+    if insecure.is_empty() {
+        return Ok(());
+    }
+    let is_production = std::env::var("LUMEN_ENV").as_deref() == Ok("production");
+    if is_production {
+        anyhow::bail!(
+            "refusing to start with insecure default secret(s) in production (LUMEN_ENV=production): {}",
+            insecure.join(", ")
+        );
+    }
+    tracing::warn!(
+        secrets = insecure.join(", ").as_str(),
+        "using known-insecure default secret(s) — fine for local dev, must be overridden before any real deployment"
+    );
+    Ok(())
+}
+
 #[derive(Clone)]
 struct AppState {
-    semantic: Arc<dyn SemanticLayer>,
+    /// Env-derived fallback, built once at startup. Used when no `data_sources`
+    /// row is active (or the control-plane DB is unreachable) — keeps the
+    /// runtime working unconfigured, same as before this table existed.
+    default_semantic: Arc<dyn SemanticLayer>,
+    /// The active `data_sources` row's adapter, short-TTL cached so a change
+    /// from the control plane's Data Sources settings page takes effect
+    /// without restarting the runtime. `None` once expired forces a re-read.
+    semantic_cache: Cache<u8, Arc<dyn SemanticLayer>>,
+    /// Shared with metering — also backs the dynamic data-source lookup.
+    pool: Option<PgPool>,
     auth: AuthConfig,
     dep_cache: Cache<String, Arc<Dep>>,
     query_cache: Cache<String, Data>,
@@ -85,10 +144,14 @@ struct AppState {
 
 /// Build the app, connect optional metering storage, and serve until shutdown.
 pub async fn serve(cfg: Config) -> anyhow::Result<()> {
+    check_secrets(&cfg)?;
     let cfg = Arc::new(cfg);
 
-    let semantic: Arc<dyn SemanticLayer> =
-        Arc::new(CubeClient::new(cfg.cube_url.clone(), cfg.cube_secret.clone()));
+    let default_semantic: Arc<dyn SemanticLayer> = cfg.semantic.build();
+    let semantic_cache: Cache<u8, Arc<dyn SemanticLayer>> = Cache::builder()
+        .max_capacity(1)
+        .time_to_live(Duration::from_secs(5))
+        .build();
     let auth = AuthConfig::new(cfg.jwt_secret.clone().into_bytes());
 
     // Short TTL so a recompiled dashboard (same id, new content) is picked up
@@ -106,14 +169,19 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
     // stalled writer/Postgres can't grow memory without limit (drop-newest).
     let (meter_tx, meter_rx) = tokio::sync::mpsc::channel::<MeterEvent>(10_000);
     let pool = connect_metering(&cfg).await;
-    tokio::spawn(meter_writer(meter_rx, pool));
+    tokio::spawn(meter_writer(meter_rx, pool.clone()));
 
-    if cfg.api_key.is_none() {
-        tracing::warn!("LUMEN_API_KEY not set — POST /tokens is unauthenticated (dev only)");
+    if cfg.internal_api_key.is_none() {
+        tracing::warn!(
+            "LUMEN_INTERNAL_API_KEY not set — the control plane cannot mint preview tokens \
+             (fine for a runtime-only deployment; required if apps/web talks to this runtime)"
+        );
     }
 
     let state = AppState {
-        semantic,
+        default_semantic,
+        semantic_cache,
+        pool,
         auth,
         dep_cache,
         query_cache,
@@ -129,6 +197,8 @@ pub async fn serve(cfg: Config) -> anyhow::Result<()> {
         .route("/_lumen/runtime.js", get(runtime_js))
         .route("/_lumen/analytics-dashboard.js", get(element_js))
         .route("/embed/dashboard/{id}", get(embed))
+        .route("/meta", get(meta))
+        .route("/compile", post(compile_dashboard))
         .layer(tower_http::trace::TraceLayer::new_for_http())
         .layer(tower_http::cors::CorsLayer::very_permissive())
         .with_state(state);
@@ -150,6 +220,12 @@ async fn connect_metering(cfg: &Config) -> Option<PgPool> {
         Ok(pool) => {
             if let Err(e) = ensure_schema(&pool).await {
                 tracing::warn!(error = %e, "metering schema init failed");
+            }
+            if let Err(e) = ensure_data_sources_schema(&pool).await {
+                tracing::warn!(error = %e, "data_sources schema init failed");
+            }
+            if let Err(e) = ensure_dashboards_schema(&pool).await {
+                tracing::warn!(error = %e, "dashboards schema init failed");
             }
             tracing::info!("metering: connected to Postgres");
             Some(pool)
@@ -192,6 +268,21 @@ async fn embed(
         return Err(AppError::NotFound("invalid dashboard id".into()));
     }
 
+    // 2.5. Tenant-scoping: a dashboard is only loadable by a token minted for
+    // the account that owns it. Fails closed — no registered owner (or an
+    // unreachable DB) denies, it never falls through to "allow". This is the
+    // fix for the gap flagged in docs/REVIEW-FINDINGS.md ("any valid token
+    // can load any compiled dashboard's layout").
+    match lookup_dashboard_account(&st, &id).await {
+        Some(owner) if owner == principal.account_id => {}
+        _ => {
+            // Same response whether the dashboard doesn't exist or belongs to
+            // a different account — don't let this endpoint be used to probe
+            // which dashboard ids exist in other accounts.
+            return Err(AppError::NotFound(format!("no compiled dashboard '{id}'")));
+        }
+    }
+
     // 3. Load the compiled DEP (cache A).
     let dep = load_dep(&st, &id).await?;
     let manifest = dep.manifest().map_err(internal)?;
@@ -231,6 +322,7 @@ async fn embed(
     let mut results: HashMap<QueryId, Data> = HashMap::with_capacity(queries.queries.len());
     let mut events: Vec<MeterEvent> = Vec::new();
     let mut compute_credits: u32 = 0;
+    let semantic = active_semantic(&st).await;
 
     for (qid, query) in &queries.queries {
         // INVARIANT: tenant_id + sc_hash are mandatory key segments.
@@ -244,7 +336,7 @@ async fn embed(
             ));
         } else {
             let t = Instant::now();
-            match st.semantic.load(query, &principal.security_context).await {
+            match semantic.load(query, &principal.security_context).await {
                 Ok(data) => {
                     let exec_ms = t.elapsed().as_millis() as i64;
                     let bytes = serde_json::to_vec(&data.rows).map(|v| v.len()).unwrap_or(0) as i64;
@@ -329,6 +421,62 @@ async fn load_dep(st: &AppState, id: &str) -> Result<Arc<Dep>, AppError> {
     Ok(arc)
 }
 
+/// Raw data-model metadata (Cube cubes+measures+dimensions, or dbt's metrics
+/// listing) from the active semantic layer — feeds the builder's field picker.
+/// Unauthenticated for now (schema shape, not data; matches `/dev/token`'s
+/// open dev posture). Gating behind the same api_key check as `/tokens` is a
+/// fast-follow.
+async fn meta(State(st): State<AppState>) -> Result<Json<serde_json::Value>, AppError> {
+    let semantic = active_semantic(&st).await;
+    let val = semantic.meta().await.map_err(internal)?;
+    Ok(Json(val))
+}
+
+/// Compile a `DashboardDef` and write it to `build_dir`, same as `lumen
+/// compile` from the CLI — but over HTTP, for the control-plane builder's
+/// "Save & Compile" action. The id is REQUIRED (the caller — the web app —
+/// always has a stable dashboard id; unlike the CLI there's no source
+/// filename to derive one from).
+async fn compile_dashboard(
+    State(st): State<AppState>,
+    Json(def): Json<DashboardDef>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let id = def
+        .id
+        .clone()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::BadRequest("dashboard `id` is required".into()))?;
+    if !is_valid_dashboard_id(&id) {
+        return Err(AppError::BadRequest(format!("invalid dashboard id `{id}`")));
+    }
+
+    let bytes = lumen_compiler::compile(&def).map_err(|e| match &e {
+        lumen_compiler::CompileError::MissingField(..) => AppError::BadRequest(e.to_string()),
+        _ => internal(e),
+    })?;
+
+    let out = st.cfg.build_dir.join(format!("{id}.lumen"));
+    if let Some(parent) = out.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(internal)?;
+    }
+    tokio::fs::write(&out, &bytes).await.map_err(internal)?;
+    // Without this, a save can serve the previous compiled DEP for up to the
+    // dep_cache's 10s TTL.
+    st.dep_cache.invalidate(&id).await;
+
+    let dep = Dep::from_bytes(bytes).map_err(internal)?;
+    let m = dep.manifest().map_err(internal)?;
+    Ok(Json(json!({
+        "id": id,
+        "title": m.title,
+        "widgets": m.widgets.len(),
+        "queries": m.queries.len(),
+        "credits": m.required_credits.estimate,
+        "content_hash": m.content_hash.0,
+        "renderers": m.renderers,
+    })))
+}
+
 async fn dev_token(State(st): State<AppState>) -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
@@ -340,6 +488,12 @@ async fn dev_token(State(st): State<AppState>) -> impl IntoResponse {
 struct TokenRequest {
     #[serde(default)]
     dashboard: Option<String>,
+    /// Which account this token is for — resolved server-side by
+    /// `resolve_account` for a real API key; only trusted verbatim as a
+    /// client-supplied value in the internal-key / no-accounts-configured
+    /// paths. See [`resolve_account`].
+    #[serde(default)]
+    account_id: Option<String>,
     tenant_id: String,
     #[serde(default)]
     user: Option<String>,
@@ -362,20 +516,7 @@ async fn tokens(
     headers: HeaderMap,
     Json(req): Json<TokenRequest>,
 ) -> Result<Json<serde_json::Value>, AppError> {
-    if let Some(expected) = &st.cfg.api_key {
-        let provided = headers
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-            .or_else(|| {
-                headers
-                    .get(header::AUTHORIZATION)
-                    .and_then(|v| v.to_str().ok())
-                    .map(|v| v.strip_prefix("Bearer ").unwrap_or(v))
-            });
-        if provided != Some(expected.as_str()) {
-            return Err(AppError::Unauthorized("invalid or missing API key".into()));
-        }
-    }
+    let account_id = resolve_account(&st, &headers, req.account_id.clone()).await?;
 
     let ttl = req.ttl_secs.unwrap_or(3600).clamp(60, 86_400);
     let sc = if req.security_context.is_null() {
@@ -386,6 +527,7 @@ async fn tokens(
     let token = mint_token(
         &st.auth,
         &TokenInput {
+            account_id,
             tenant_id: req.tenant_id,
             sub: req.user.unwrap_or_else(|| "embed".into()),
             roles: req.roles,
@@ -450,6 +592,9 @@ fn demo_token(st: &AppState) -> String {
     mint_token(
         &st.auth,
         &TokenInput {
+            // Matches the "default" account the demo dashboards (sales) are
+            // registered under — see docs/BUSINESS-PLAN.md §5.1 backfill.
+            account_id: "default".into(),
             tenant_id: "demo".into(),
             sub: "dev-user".into(),
             roles: vec!["viewer".into()],
@@ -491,6 +636,211 @@ async fn ensure_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
     .execute(pool)
     .await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Data sources — the control plane's "Data Sources" settings page reads and
+// writes this same table directly (it shares DATABASE_URL); the runtime only
+// reads it. Schema is intentionally duplicated (CREATE TABLE IF NOT EXISTS) in
+// apps/web/src/lib/data-sources.ts — keep the two in sync if either changes.
+// ---------------------------------------------------------------------------
+
+async fn ensure_data_sources_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS data_sources (
+            id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+            name       TEXT        NOT NULL,
+            provider   TEXT        NOT NULL CHECK (provider IN ('cube','dbt')),
+            config     JSONB       NOT NULL,
+            is_active  BOOLEAN     NOT NULL DEFAULT false,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    // At most one active row, enforced at the DB level (not just app logic).
+    sqlx::query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS data_sources_one_active \
+         ON data_sources ((is_active)) WHERE is_active",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Resolve the `SemanticLayer` to use for this request: the active
+/// `data_sources` row if one is configured and the control-plane DB is
+/// reachable, else the env-derived default (`AppState::default_semantic`).
+/// Cached for `semantic_cache`'s TTL so a typical request doesn't round-trip
+/// to Postgres just to find out nothing changed.
+async fn active_semantic(st: &AppState) -> Arc<dyn SemanticLayer> {
+    if let Some(layer) = st.semantic_cache.get(&0u8).await {
+        return layer;
+    }
+    let layer = resolve_active_semantic(st)
+        .await
+        .unwrap_or_else(|| st.default_semantic.clone());
+    st.semantic_cache.insert(0u8, layer.clone()).await;
+    layer
+}
+
+async fn resolve_active_semantic(st: &AppState) -> Option<Arc<dyn SemanticLayer>> {
+    let pool = st.pool.as_ref()?;
+    let row: (String, serde_json::Value) = sqlx::query_as(
+        "SELECT provider, config FROM data_sources WHERE is_active LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| tracing::warn!(error = %e, "data_sources lookup failed"))
+    .ok()??;
+    let (provider, config) = row;
+    Some(semantic_config_from_row(&provider, &config).build())
+}
+
+fn semantic_config_from_row(provider: &str, config: &serde_json::Value) -> SemanticConfig {
+    let get = |k: &str| {
+        config
+            .get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    };
+    SemanticConfig {
+        provider: Some(Provider::parse(provider)),
+        cube_url: get("cube_url"),
+        cube_secret: get("cube_secret"),
+        dbt_graphql_url: get("dbt_graphql_url"),
+        dbt_service_token: get("dbt_service_token"),
+        dbt_environment_id: get("dbt_environment_id"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dashboards / accounts — the control plane (apps/web) owns and writes these
+// tables (Drizzle-managed there; see apps/web/src/lib/db/schema.ts and
+// lib/organizations.ts). The runtime only READS them, over the same shared
+// Postgres — it has no ORM, so this is plain sqlx. `organization` is a
+// Better-Auth-managed table (camelCase, double-quoted identifiers); keep this
+// query in sync if the control plane's org schema changes.
+//
+// Tenant-scoping invariant: a dashboard is only ever loadable by a token whose
+// `account_id` matches the dashboard's `organization_id` — see `embed`'s
+// ownership check. Fails closed: no row, no pool, or a mismatch are all
+// treated identically (reject), never treated as "allow".
+// ---------------------------------------------------------------------------
+
+async fn ensure_dashboards_schema(pool: &PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS dashboards (
+            id              TEXT        PRIMARY KEY,
+            organization_id TEXT        NOT NULL DEFAULT '',
+            title           TEXT        NOT NULL,
+            theme           TEXT        NOT NULL DEFAULT 'light',
+            definition      JSONB       NOT NULL,
+            compiled_at     TIMESTAMPTZ,
+            content_hash    TEXT,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        )"#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS dashboards_organization_id ON dashboards (organization_id)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Which account (organization) owns dashboard `id` — `None` if the dashboard
+/// has no row at all (never compiled through the control plane, e.g. a raw
+/// CLI-authored fixture) or the DB is unreachable. Both are treated as "not
+/// accessible" by the caller, not "allow".
+async fn lookup_dashboard_account(st: &AppState, id: &str) -> Option<String> {
+    let pool = st.pool.as_ref()?;
+    sqlx::query_scalar::<_, String>("SELECT organization_id FROM dashboards WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| tracing::warn!(error = %e, "dashboard ownership lookup failed"))
+        .ok()?
+}
+
+/// Resolve which account is calling `POST /tokens`.
+///
+/// Two callers, two trust levels:
+/// - A design partner's OWN backend, presenting their org's runtime API key
+///   (`X-Api-Key` / `Bearer`) — resolved by hashing the presented key and
+///   matching it against `organization.runtimeApiKeyHash`. The account is
+///   ALWAYS the one that owns the matched key; any client-supplied
+///   `account_id` in the request body is ignored (can't be spoofed).
+/// - The Lumen control plane itself, previewing a dashboard on behalf of
+///   whichever organization owns it — presents `LUMEN_INTERNAL_API_KEY`
+///   instead, and its client-supplied `account_id` IS trusted (the control
+///   plane already enforced dashboard ownership at its own DB layer before
+///   ever calling here — see apps/web/src/lib/dashboards.ts).
+///
+/// Dev-mode fallback: if no organization has a key configured yet AND no key
+/// was presented, trust the client-supplied `account_id` (default
+/// `"default"`) — matches this codebase's existing "open until configured"
+/// posture for other dev-only gates.
+async fn resolve_account(
+    st: &AppState,
+    headers: &HeaderMap,
+    requested: Option<String>,
+) -> Result<String, AppError> {
+    let provided_key = headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .or_else(|| {
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.strip_prefix("Bearer ").unwrap_or(v))
+        });
+
+    if let Some(key) = provided_key {
+        if let Some(internal) = &st.cfg.internal_api_key {
+            if key == internal {
+                return Ok(requested.unwrap_or_else(|| "default".into()));
+            }
+        }
+        let Some(pool) = &st.pool else {
+            return Err(AppError::Internal("account resolution unavailable".into()));
+        };
+        // SHA-256, matching apps/web/src/lib/organizations.ts::generateApiKey
+        // exactly (Node's `crypto.createHash('sha256')`) — the two sides must
+        // agree on the algorithm since the web app is where the hash is
+        // written and this is where it's compared.
+        use sha2::{Digest, Sha256};
+        let hash = hex::encode(Sha256::digest(key.as_bytes()));
+        let account_id: Option<String> =
+            sqlx::query_scalar(r#"SELECT id FROM "organization" WHERE "runtimeApiKeyHash" = $1"#)
+                .bind(&hash)
+                .fetch_optional(pool)
+                .await
+                .map_err(internal)?;
+        return account_id.ok_or_else(|| AppError::Unauthorized("invalid API key".into()));
+    }
+
+    // No key presented at all — only acceptable while no account has a key
+    // configured yet (fresh/dev install).
+    let Some(pool) = &st.pool else {
+        return Ok(requested.unwrap_or_else(|| "default".into()));
+    };
+    let any_keys_configured: Option<i32> =
+        sqlx::query_scalar(r#"SELECT 1 FROM "organization" WHERE "runtimeApiKeyHash" IS NOT NULL LIMIT 1"#)
+            .fetch_optional(pool)
+            .await
+            .map_err(internal)?;
+    if any_keys_configured.is_some() {
+        return Err(AppError::Unauthorized("API key required".into()));
+    }
+    tracing::warn!("no organizations have a runtime API key yet — trusting client-supplied account_id (dev only)");
+    Ok(requested.unwrap_or_else(|| "default".into()))
 }
 
 async fn meter_writer(mut rx: Receiver<MeterEvent>, pool: Option<PgPool>) {
@@ -659,6 +1009,7 @@ enum AppError {
     Unauthorized(String),
     Forbidden(String),
     NotFound(String),
+    BadRequest(String),
     Internal(String),
 }
 
@@ -672,6 +1023,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m),
             AppError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             AppError::NotFound(m) => (StatusCode::NOT_FOUND, m),
+            AppError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             AppError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
         };
         (status, msg).into_response()

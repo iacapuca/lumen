@@ -43,6 +43,8 @@ struct Compiled {
     chart_id: ChartId,
     chart: ChartSpec,
     binding: Binding,
+    /// Builder-authored explicit grid placement. `None` ⇒ auto-flow.
+    pos: Option<lumen_shared::GridPos>,
 }
 
 /// Compile a dashboard definition into `.lumen` bytes.
@@ -208,6 +210,7 @@ fn resolve_widget(i: usize, w: &WidgetDef, theme_ref: &str) -> Result<Compiled, 
                 chart_id,
                 chart,
                 binding,
+                pos: w.pos,
             })
         }
         WidgetKind::LineChart => {
@@ -265,6 +268,7 @@ fn resolve_widget(i: usize, w: &WidgetDef, theme_ref: &str) -> Result<Compiled, 
                 chart_id,
                 chart,
                 binding,
+                pos: w.pos,
             })
         }
         WidgetKind::BarChart => {
@@ -311,6 +315,7 @@ fn resolve_widget(i: usize, w: &WidgetDef, theme_ref: &str) -> Result<Compiled, 
                 chart_id,
                 chart,
                 binding,
+                pos: w.pos,
             })
         }
         WidgetKind::Table => {
@@ -345,6 +350,7 @@ fn resolve_widget(i: usize, w: &WidgetDef, theme_ref: &str) -> Result<Compiled, 
                 chart_id,
                 chart,
                 binding,
+                pos: w.pos,
             })
         }
     }
@@ -370,28 +376,39 @@ fn widget_size(kind: WidgetKind) -> (u16, u16) {
 }
 
 /// Shelf-pack widgets left-to-right, wrapping rows — a deterministic auto-flow
-/// layout resolved entirely at compile time.
+/// layout resolved entirely at compile time. A widget with an explicit
+/// builder-authored `pos` is placed verbatim and does NOT advance the
+/// auto-flow cursor — so dashboards that mix explicit and auto-flow widgets
+/// (or that set no `pos` at all, e.g. every hand-authored dashboard today)
+/// compile identically to before this field existed.
 fn place_widgets(compiled: &[Compiled]) -> Vec<WidgetPlacement> {
     let mut out = Vec::with_capacity(compiled.len());
     let (mut x, mut y, mut row_h) = (0u16, 0u16, 0u16);
     for c in compiled {
-        let (w, h) = widget_size(c.kind);
-        if x + w > GRID_COLS {
-            x = 0;
-            y += row_h;
-            row_h = 0;
-        }
+        let pos = match c.pos {
+            Some(p) => p,
+            None => {
+                let (w, h) = widget_size(c.kind);
+                if x + w > GRID_COLS {
+                    x = 0;
+                    y += row_h;
+                    row_h = 0;
+                }
+                let p = lumen_shared::GridPos { x, y, w, h };
+                x += w;
+                row_h = row_h.max(h);
+                p
+            }
+        };
         out.push(WidgetPlacement {
             id: c.id.clone(),
             kind: c.kind,
             title: c.title.clone(),
-            pos: lumen_shared::GridPos { x, y, w, h },
+            pos,
             query: c.query_id.clone(),
             chart: c.chart_id.clone(),
             binding: c.binding.clone(),
         });
-        x += w;
-        row_h = row_h.max(h);
     }
     out
 }
@@ -495,5 +512,27 @@ mod tests {
         let dep = Dep::from_bytes(compile(&def).unwrap()).unwrap();
         assert_eq!(dep.manifest().unwrap().widgets.len(), 2);
         assert_eq!(dep.queries().unwrap().queries.len(), 1, "queries dedupe");
+    }
+
+    #[test]
+    fn respects_explicit_pos_and_skips_autoflow_cursor_for_it() {
+        // First widget has an explicit pos; the second has none and should
+        // still auto-flow from {x:0,y:0} as if the first widget weren't
+        // there at all — explicit-pos widgets must not consume shelf space.
+        let def: DashboardDef = serde_json::from_str(
+            r#"{"id":"d","title":"t","layout":[
+                {"type":"kpi","measure":"orders.revenue","pos":{"x":6,"y":0,"w":6,"h":3}},
+                {"type":"kpi","measure":"orders.count"}
+            ]}"#,
+        )
+        .unwrap();
+        let dep = Dep::from_bytes(compile(&def).unwrap()).unwrap();
+        let layout = dep.layout().unwrap();
+
+        let explicit = layout.widgets.iter().find(|w| w.id.as_str() == "w_0").unwrap();
+        assert_eq!((explicit.pos.x, explicit.pos.y, explicit.pos.w, explicit.pos.h), (6, 0, 6, 3));
+
+        let auto = layout.widgets.iter().find(|w| w.id.as_str() == "w_1").unwrap();
+        assert_eq!((auto.pos.x, auto.pos.y), (0, 0), "auto-flow widget unaffected by sibling's explicit pos");
     }
 }

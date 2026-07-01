@@ -1,7 +1,14 @@
-# Lumen local infra: Postgres (TPC-H) + Cube.dev (semantic layer).
+# Lumen local infra: two OSS warehouses (Postgres, ClickHouse), each with its
+# own Cube.dev instance, so the full Lumen -> semantic layer -> warehouse flow
+# can be exercised against either backend.
 #   docker compose -f infra/docker-compose.yml up -d
+#
 # Postgres is exposed on host :5544 (for `lumen seed` + the runtime's metering).
-# Cube talks to Postgres over the compose network (host `postgres`).
+# ClickHouse is exposed on host :8123 (HTTP) / :9000 (native, for `clickhouse-client`).
+# `cube`            (host :4000) -> postgres   warehouse
+# `cube-clickhouse` (host :4001) -> clickhouse warehouse
+# Point Lumen at either by setting CUBE_URL to the matching port — the
+# CubeClient seam only talks REST, it doesn't care which warehouse is behind it.
 
 name: lumen
 
@@ -45,5 +52,47 @@ services:
     volumes:
       - ./cube:/cube/conf
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    restart: unless-stopped
+    ports:
+      - "8123:8123"   # HTTP interface (used by clickhouse-client --host over HTTP, and Cube)
+      - "9000:9000"   # native protocol
+    environment:
+      CLICKHOUSE_USER: lumen
+      CLICKHOUSE_PASSWORD: lumen
+      CLICKHOUSE_DB: default
+    volumes:
+      - chdata:/var/lib/clickhouse
+      # Seed SQL lives here so `clickhouse-client --queries-file` can run it
+      # in-container without piping over `docker exec -i`.
+      - ./clickhouse:/seed
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user lumen --password lumen --query 'SELECT 1'"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  cube-clickhouse:
+    image: cubejs/cube:v1.6.64
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    ports:
+      - "4001:4000"   # REST API + Developer Playground
+    environment:
+      CUBEJS_DEV_MODE: "true"
+      CUBEJS_API_SECRET: "lumen-dev-cube-secret"
+      CUBEJS_DB_TYPE: "clickhouse"
+      CUBEJS_DB_HOST: "clickhouse"
+      CUBEJS_DB_PORT: "8123"
+      CUBEJS_DB_NAME: "default"
+      CUBEJS_DB_USER: "lumen"
+      CUBEJS_DB_PASS: "lumen"
+    volumes:
+      - ./cube-clickhouse:/cube/conf
+
 volumes:
   pgdata:
+  chdata:

@@ -1,71 +1,84 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
+import { createServerFn } from '@tanstack/react-start'
+import { queryOptions, useQuery, useSuspenseQuery } from '@tanstack/react-query'
 import { embedUrl } from '@lumen/contracts'
 
 import { RUNTIME_URL } from '../lib/config'
+import { getBindings } from '../lib/bindings'
 import { getDashboard } from '../lib/dashboards'
 
+const getDashboardFn = createServerFn({ method: 'GET' })
+  .validator((d: { id: string; organizationId: string }) => d)
+  .handler(async ({ data }) => (await getDashboard(data.id, data.organizationId)) ?? null)
+
+// Query key ['dashboards', id] is shared with _app.dashboards.builder.$id.tsx
+// (same key, independently-defined queryFn) — invalidating it from the
+// builder after a save also refreshes this preview page. Keep the key shape
+// in sync between the two files if either changes.
+const dashboardOptions = (id: string, organizationId: string) =>
+  queryOptions({
+    queryKey: ['dashboards', id],
+    queryFn: () => getDashboardFn({ data: { id, organizationId } }),
+  })
+
 export const Route = createFileRoute('/_app/dashboards/$id')({
+  loader: ({ params, context }) =>
+    context.queryClient.ensureQueryData(dashboardOptions(params.id, context.organizationId)),
   component: DashboardPreview,
 })
 
-type LoadState =
-  | { status: 'loading' }
-  | { status: 'ready'; token: string }
-  | { status: 'error'; message: string }
-
-type Mode = 'webcomponent' | 'iframe'
-
-function DashboardPreview() {
-  const { id } = Route.useParams()
-  const dashboard = getDashboard(id)
-  const [state, setState] = useState<LoadState>({ status: 'loading' })
-  const [mode, setMode] = useState<Mode>('webcomponent')
-  const [reload, setReload] = useState(0)
-  const wcRef = useRef<HTMLDivElement>(null)
-
-  // Mint a scoped token from the runtime's POST /tokens (the Embeddable model:
-  // the token, not the iframe, is what scopes data via row-level security).
-  // Fetched on the client so a down runtime degrades gracefully instead of
-  // breaking SSR.
-  useEffect(() => {
-    let cancelled = false
-    setState({ status: 'loading' })
-
-    fetch(`${RUNTIME_URL}/tokens`, {
+// Mints the preview token SERVER-SIDE (never in the browser): the control
+// plane previews dashboards on behalf of whichever organization owns them,
+// which requires LUMEN_INTERNAL_API_KEY — a first-party secret distinct from
+// a design partner's own per-organization runtime API key (see
+// crates/runtime/src/lib.rs `resolve_account`). That secret must never reach
+// client JS, so this can't be a plain client-side fetch like it used to be.
+const mintTokenFn = createServerFn({ method: 'POST' })
+  .validator((d: { id: string; organizationId: string }) => d)
+  .handler(async ({ data }) => {
+    const internalKey = getBindings().LUMEN_INTERNAL_API_KEY
+    const res = await fetch(`${RUNTIME_URL}/tokens`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(internalKey ? { 'x-api-key': internalKey } : {}),
+      },
       body: JSON.stringify({
-        dashboard: id,
+        dashboard: data.id,
+        account_id: data.organizationId,
         tenant_id: 'acme',
         user: 'control-plane-preview',
         security_context: { tenant_id: 'acme' },
       }),
     })
-      .then(async (res) => {
-        if (!res.ok) throw new Error(`runtime responded ${res.status} ${res.statusText}`)
-        const body = (await res.json()) as { token: string }
-        return body.token
-      })
-      .then((token) => {
-        if (!cancelled) setState({ status: 'ready', token })
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          const message = err instanceof Error ? err.message : String(err)
-          setState({ status: 'error', message })
-        }
-      })
+    if (!res.ok) throw new Error(`runtime responded ${res.status} ${res.statusText}`)
+    return (await res.json()) as { token: string }
+  })
 
-    return () => {
-      cancelled = true
-    }
-  }, [id, reload])
+type Mode = 'webcomponent' | 'iframe'
+
+function DashboardPreview() {
+  const { id } = Route.useParams()
+  const { organizationId } = Route.useRouteContext()
+  const { data: dashboard } = useSuspenseQuery(dashboardOptions(id, organizationId))
+  const [mode, setMode] = useState<Mode>('webcomponent')
+  const wcRef = useRef<HTMLDivElement>(null)
+
+  // Client-triggered (via the server fn above), NOT prefetched in the loader —
+  // a down runtime should degrade gracefully instead of breaking SSR of the
+  // page itself. `retry: false` preserves the original
+  // single-attempt-then-manual-"Retry" behavior.
+  const tokenQuery = useQuery({
+    queryKey: ['embed-token', id],
+    queryFn: async () => (await mintTokenFn({ data: { id, organizationId } })).token,
+    retry: false,
+  })
 
   // Web Component mode: dynamically register <analytics-dashboard> (client-only)
   // and mount it imperatively — avoids custom-element JSX typing.
   useEffect(() => {
-    if (mode !== 'webcomponent' || state.status !== 'ready') return
+    if (mode !== 'webcomponent' || !tokenQuery.data) return
     const container = wcRef.current
     if (!container) return
 
@@ -76,7 +89,7 @@ function DashboardPreview() {
       el = document.createElement('analytics-dashboard')
       el.setAttribute('base', RUNTIME_URL)
       el.setAttribute('dashboard', id)
-      el.setAttribute('token', state.token)
+      el.setAttribute('token', tokenQuery.data)
       el.style.display = 'block'
       el.style.minHeight = '720px'
       container.appendChild(el)
@@ -86,7 +99,7 @@ function DashboardPreview() {
       active = false
       if (el) el.remove()
     }
-  }, [mode, state, id])
+  }, [mode, tokenQuery.data, id])
 
   return (
     <div>
@@ -126,7 +139,7 @@ function DashboardPreview() {
 
       <div className="preview">
         <div className="preview__frame-wrap">
-          {state.status === 'loading' && (
+          {tokenQuery.isPending && (
             <div className="state">
               <div className="spinner" />
               <div className="state__title">Minting scoped token…</div>
@@ -134,35 +147,29 @@ function DashboardPreview() {
             </div>
           )}
 
-          {state.status === 'error' && (
+          {tokenQuery.isError && (
             <div className="state state--error">
               <div className="state__title">Runtime unreachable</div>
               <div>
                 Could not reach the Lumen runtime at <code>{RUNTIME_URL}</code>.
                 <br />
-                {state.message}
+                {tokenQuery.error instanceof Error ? tokenQuery.error.message : String(tokenQuery.error)}
               </div>
-              <button
-                className="btn"
-                onClick={() => setReload((n) => n + 1)}
-                style={{ marginTop: 8 }}
-              >
+              <button className="btn" onClick={() => tokenQuery.refetch()} style={{ marginTop: 8 }}>
                 Retry
               </button>
             </div>
           )}
 
-          {state.status === 'ready' && mode === 'iframe' && (
+          {tokenQuery.data && mode === 'iframe' && (
             <iframe
               className="preview__frame"
               title={dashboard?.title ?? id}
-              src={embedUrl(RUNTIME_URL, id, state.token)}
+              src={embedUrl(RUNTIME_URL, id, tokenQuery.data)}
             />
           )}
 
-          {state.status === 'ready' && mode === 'webcomponent' && (
-            <div ref={wcRef} />
-          )}
+          {tokenQuery.data && mode === 'webcomponent' && <div ref={wcRef} />}
         </div>
       </div>
     </div>

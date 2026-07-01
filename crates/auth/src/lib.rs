@@ -22,6 +22,13 @@ pub enum AuthError {
 /// once and is a mandatory segment of every downstream cache key.
 #[derive(Debug, Clone)]
 pub struct Principal {
+    /// The Lumen *account* boundary — literally Better Auth's `organization.id`
+    /// from the control plane (apps/web/src/lib/organizations.ts). Distinct
+    /// from `tenant_id`: one account (one design partner's Lumen workspace)
+    /// mints tokens for many of ITS OWN tenants, all sharing this same
+    /// `account_id`. The runtime uses this to enforce that a dashboard can
+    /// only be loaded by tokens minted for the account that owns it.
+    pub account_id: String,
     pub tenant_id: String,
     pub sub: String,
     pub roles: Vec<String>,
@@ -50,6 +57,7 @@ pub struct Claims {
     pub nbf: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub iat: Option<i64>,
+    pub account_id: String,
     pub tenant_id: String,
     #[serde(default)]
     pub roles: Vec<String>,
@@ -99,6 +107,7 @@ pub fn verify(token: &str, cfg: &AuthConfig) -> Result<Principal, AuthError> {
     let sc = SecurityContext(c.security_context);
     let sc_hash = sc.sc_hash();
     Ok(Principal {
+        account_id: c.account_id,
         tenant_id: c.tenant_id,
         sub: c.sub,
         roles: c.roles,
@@ -110,6 +119,10 @@ pub fn verify(token: &str, cfg: &AuthConfig) -> Result<Principal, AuthError> {
 
 /// Input for minting a token (used by the dev `/embed` demo + tests).
 pub struct TokenInput {
+    /// Resolved server-side by the runtime (`resolve_account` in
+    /// crates/runtime/src/lib.rs) — never taken from client-supplied input
+    /// once real accounts are configured. See [`Principal::account_id`].
+    pub account_id: String,
     pub tenant_id: String,
     pub sub: String,
     pub roles: Vec<String>,
@@ -129,6 +142,7 @@ pub fn mint_token(cfg: &AuthConfig, input: &TokenInput) -> Result<String, AuthEr
         exp: now + input.ttl_secs,
         nbf: Some(now),
         iat: Some(now),
+        account_id: input.account_id.clone(),
         tenant_id: input.tenant_id.clone(),
         roles: input.roles.clone(),
         permissions: input.permissions.clone(),
@@ -155,6 +169,7 @@ mod tests {
         let token = mint_token(
             &cfg(),
             &TokenInput {
+                account_id: "acct_1".into(),
                 tenant_id: "acme".into(),
                 sub: "user_1".into(),
                 roles: vec!["viewer".into()],
@@ -166,6 +181,7 @@ mod tests {
         .unwrap();
 
         let p = verify(&token, &cfg()).unwrap();
+        assert_eq!(p.account_id, "acct_1");
         assert_eq!(p.tenant_id, "acme");
         assert!(p.has_permission("dashboard:sales:read"));
         assert!(!p.sc_hash.is_empty());
@@ -176,6 +192,7 @@ mod tests {
         let token = mint_token(
             &cfg(),
             &TokenInput {
+                account_id: "acct_1".into(),
                 tenant_id: "acme".into(),
                 sub: "u".into(),
                 roles: vec![],
@@ -194,6 +211,7 @@ mod tests {
         let token = mint_token(
             &cfg(),
             &TokenInput {
+                account_id: "acct_1".into(),
                 tenant_id: "acme".into(),
                 sub: "u".into(),
                 roles: vec![],

@@ -19,6 +19,7 @@ deploy/.env.deploy
 # Data
 /infra/postgres/data
 /infra/cube/.cubestore
+/infra/cube-clickhouse/.cubestore
 
 # JS / monorepo
 node_modules

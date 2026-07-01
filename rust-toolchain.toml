@@ -1,0 +1,10 @@
+# Pins the Rust toolchain for reproducible local dev + CI.
+# rustup reads this automatically (no `rustup default` needed); editors and
+# rust-analyzer honor it too. Resolution is by directory, so this also covers
+# the separate `edge/` wasm workspace below it.
+[toolchain]
+channel = "1.96.1"
+components = ["clippy", "rustfmt", "rust-analyzer"]
+# Required by the lumen-edge crate (Cloudflare Workers / wasm). Harmless for
+# native-only contributors — rustup just installs it once.
+targets = ["wasm32-unknown-unknown"]

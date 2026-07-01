@@ -77,6 +77,9 @@ pub struct WidgetDef {
     /// Value formatting hint (`currency`, `number`, `percent`).
     #[serde(default)]
     pub format: Option<ValueFormat>,
+    /// Explicit grid placement (builder-authored). Absent ⇒ compiler auto-flow.
+    #[serde(default)]
+    pub pos: Option<GridPos>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
